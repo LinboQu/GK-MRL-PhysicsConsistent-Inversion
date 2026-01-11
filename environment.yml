@@ -1,0 +1,38 @@
+name: geo_inv
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+
+  # Core scientific stack
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - scikit-image
+  - h5py
+  - tqdm
+
+  # Jupyter
+  - jupyterlab
+  - ipykernel
+
+  # PyTorch (GPU runtime via conda)
+  - pytorch=2.5.1
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+
+  # Optional quality-of-life
+  - pyyaml
+  - rich
+
+  - pip:
+      # Geo/IO
+      - segyio
+      - lasio
+      # Optional: only if you need corner-point / Eclipse grids later
+      # - xtgeo
