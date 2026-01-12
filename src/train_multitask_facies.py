@@ -11,7 +11,8 @@ from src.geo_constraints import DataPaths
 from src.dataset_vie import StanfordVIEWellPatchDataset
 from src.models.geo_cnn_multitask import GeoCNNMultiTask
 from src.physics_forward import forward_seismic_from_ai
-from src.utils.train_utils import set_seed, alpha_stats, AverageMeter, ensure_dir
+from src.utils.alpha_stats import alpha_stats
+from src.utils.train_utils import set_seed, AverageMeter, ensure_dir
 
 
 # -----------------------------
@@ -48,80 +49,6 @@ def weighted_masked_ce(logits, y, valid, w=None, ignore_index=-1):
 
 
 # -----------------------------
-# debug helpers
-# -----------------------------
-@torch.no_grad()
-def _alpha_stats(a: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-    """
-    a: [B,S,T,H,W] or [B,S,H,W] or [B,S,T] etc.
-    We will compute mean/max over all dims except S.
-    """
-    if a is None:
-        return None, None
-    if not torch.is_tensor(a):
-        return None, None
-
-    # find "S" dim = 1 by convention: [B,S,...]
-    if a.dim() < 2:
-        return None, None
-
-    reduce_dims = [d for d in range(a.dim()) if d != 1]
-    s_mean = a.mean(dim=reduce_dims).detach().cpu().numpy()
-    s_max = a.amax(dim=reduce_dims).detach().cpu().numpy()
-    return s_mean, s_max
-
-
-def print_psfm_alphas_once_per_epoch(model: torch.nn.Module, epoch: int, batch_i: int, enabled: bool = True):
-    """
-    Print PSFM alphas ONLY for first batch of each epoch (train loop).
-    This prevents "刷屏".
-    """
-    if (not enabled) or batch_i != 0:
-        return
-
-    if not hasattr(model, "get_last_psfm_alphas"):
-        print(f"  [alpha][epoch {epoch:02d}] model has no get_last_psfm_alphas()")
-        return
-
-    alphas = model.get_last_psfm_alphas()
-    if alphas is None:
-        print(f"  [alpha][epoch {epoch:02d}] None (alphas not recorded)")
-        return
-
-    if not isinstance(alphas, dict):
-        print(f"  [alpha][epoch {epoch:02d}] unexpected type: {type(alphas)}")
-        return
-
-    keys = list(alphas.keys())
-    if len(keys) == 0:
-        print(f"  [alpha][epoch {epoch:02d}] empty dict (no psfm keys)")
-        return
-
-    # Print keys first (helps verify you really have psfm1/psfm2/psfm3 ...)
-    print(f"  [alpha][epoch {epoch:02d}] keys={keys}")
-
-    msg_parts = []
-    for k in keys:
-        a = alphas.get(k, None)
-        if a is None:
-            msg_parts.append(f"{k}: None")
-            continue
-        if not torch.is_tensor(a):
-            msg_parts.append(f"{k}: non-tensor({type(a)})")
-            continue
-
-        s_mean, s_max = _alpha_stats(a)
-        if s_mean is None:
-            msg_parts.append(f"{k}: shape={tuple(a.shape)} (no stats)")
-        else:
-            msg_parts.append(
-                f"{k}: shape={tuple(a.shape)} mean={np.round(s_mean, 3)} max={np.round(s_max, 3)}"
-            )
-
-    print("  [alpha]", " | ".join(msg_parts))
-
-
-# -----------------------------
 # one epoch
 # -----------------------------
 def run_one_epoch(
@@ -140,6 +67,7 @@ def run_one_epoch(
     wavelet_nt: int,
     epoch: int,
     print_alpha: bool,
+    print_alpha_every: int,
 ) -> dict:
     is_train = optim is not None
     model.train(is_train)
@@ -148,6 +76,8 @@ def run_one_epoch(
     mai = AverageMeter()
     mph = AverageMeter()
     mfa = AverageMeter()
+
+    alpha_log = ""
 
     for batch_i, batch in enumerate(loader):
         x = batch["x"].to(device)
@@ -172,9 +102,26 @@ def run_one_epoch(
         # forward
         ai_hat, fac_logits = model(x, p, c, m)
 
-        # alpha debug: only train, only first batch
-        if is_train:
-            print_psfm_alphas_once_per_epoch(model, epoch=epoch, batch_i=batch_i, enabled=print_alpha)
+        if print_alpha and is_train and batch_i == 0 and (epoch % print_alpha_every == 0):
+            alphas = None
+
+            if hasattr(model, "get_alphas") and callable(model.get_alphas):
+                alphas = model.get_alphas()
+
+            if not alphas and hasattr(model, "_last_alphas"):
+                alphas = model._last_alphas
+
+            if not alphas:
+                alpha_log = f"[alpha][epoch {epoch}] (no alphas found on model; skip)"
+            else:
+                lines = [f"[alpha][epoch {epoch}] keys={list(alphas.keys())}"]
+                for k, a in alphas.items():
+                    m, x, h = alpha_stats(a)
+                    lines.append(
+                        f"[alpha] {k}: shape={tuple(a.shape)} "
+                        f"mean={np.round(m,3)} max={np.round(x,3)} H={h:.3f}"
+                    )
+                alpha_log = "\n".join(lines)
 
         # losses
         L_ai = weighted_masked_mse(ai_hat, y_ai, mc, w=cc)
@@ -208,12 +155,15 @@ def run_one_epoch(
         mph.update(L_phys.item(), x.size(0))
         mfa.update(L_fac.item(), x.size(0))
 
-    return {
+    out = {
         "total": mt.avg,
         "ai": mai.avg,
         "phys": mph.avg,
         "fac": mfa.avg,
     }
+    if alpha_log:
+        out["alpha_log"] = alpha_log
+    return out
 
 
 # -----------------------------
@@ -272,6 +222,7 @@ def main():
 
     # debug switches
     PRINT_ALPHA = True          # only prints once per epoch (train first batch)
+    PRINT_ALPHA_EVERY = 5
     MAX_EPOCHS = 50
 
     # best trackers
@@ -311,7 +262,8 @@ def main():
             f0_hz=f0_hz,
             wavelet_nt=wavelet_nt,
             epoch=epoch,
-            print_alpha=False,
+            print_alpha=PRINT_ALPHA,
+            print_alpha_every=PRINT_ALPHA_EVERY,
         )
 
         # -------------------------
@@ -333,31 +285,14 @@ def main():
                 wavelet_nt=wavelet_nt,
                 epoch=epoch,
                 print_alpha=False,   # never print alpha in val to avoid noise
+                print_alpha_every=PRINT_ALPHA_EVERY,
             )
 
         train_total, train_ai, train_phys, train_fac = tr["total"], tr["ai"], tr["phys"], tr["fac"]
         val_total, val_ai, val_phys, val_fac = va["total"], va["ai"], va["phys"], va["fac"]
         
-        # -------------------------
-        # alpha stats print (train only, epoch-level, no spam)
-        # -------------------------
-        if PRINT_ALPHA and (epoch % 5 == 0 or epoch == 1):
-            # 1) 优先从 model.last_alphas 取
-            alphas = getattr(model, "last_alphas", None)
-            if alphas is None:
-                # 2) 兼容某些写法：model.alphas
-                alphas = getattr(model, "alphas", None)
-            
-            if isinstance(alphas, dict) and len(alphas) > 0:
-                msg = []
-                keys = list(alphas.keys())
-                print(f"  [alpha][epoch {epoch}] keys={keys}")
-                for k, a in alphas.items():
-                    m, x, h = alpha_stats(a)  
-                    msg.append(f"{k}: mean={np.round(m,3)} max={np.round(x,3)} H={h:.3f}")
-                print("  [alpha] " + " | ".join(msg))
-            else:
-                print(f"  [alpha][epoch {epoch}] (no alphas found on model; skip)")
+        if "alpha_log" in tr:
+            print(tr["alpha_log"])
 
         # -------------------------
         # log
