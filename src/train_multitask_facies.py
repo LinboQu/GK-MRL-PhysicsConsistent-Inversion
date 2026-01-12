@@ -72,10 +72,11 @@ def run_one_epoch(
     is_train = optim is not None
     model.train(is_train)
 
-    mt = AverageMeter()
-    mai = AverageMeter()
-    mph = AverageMeter()
-    mfa = AverageMeter()
+    # ---- meters (avoid names like mt that are easy to shadow elsewhere) ----
+    meter_total = AverageMeter()
+    meter_ai    = AverageMeter()
+    meter_phys  = AverageMeter()
+    meter_fac   = AverageMeter()
 
     alpha_log = ""
 
@@ -83,7 +84,7 @@ def run_one_epoch(
         x = batch["x"].to(device)
         p = batch["p"].to(device)
         c = batch["c"].to(device)
-        m = batch["m"].to(device)
+        mask5d = batch["m"].to(device)  # rename from m -> mask5d to avoid collisions
 
         y_ai = batch["y"].to(device)              # [B,T]
         cc = batch["c_center"].to(device)         # [B,T]
@@ -92,19 +93,20 @@ def run_one_epoch(
         v_fac = batch["facies_valid"].to(device)
 
         # center trace mask & observed seismic
-        H, W = m.shape[2], m.shape[3]
-        mc = m[:, 0, H // 2, W // 2, :]           # [B,T]
+        H, W = mask5d.shape[2], mask5d.shape[3]
+        mc = mask5d[:, 0, H // 2, W // 2, :]      # [B,T]
         s_obs = x[:, 0, H // 2, W // 2, :]        # [B,T]
 
         if is_train:
             optim.zero_grad(set_to_none=True)
 
         # forward
-        ai_hat, fac_logits = model(x, p, c, m)
+        ai_hat, fac_logits = model(x, p, c, mask5d)
 
+        # ---- alpha logging (train only, first batch only, every N epochs) ----
         if print_alpha and is_train and batch_i == 0 and (epoch % print_alpha_every == 0):
             alphas = None
-
+            
             if hasattr(model, "get_alphas") and callable(model.get_alphas):
                 alphas = model.get_alphas()
 
@@ -116,17 +118,19 @@ def run_one_epoch(
             else:
                 lines = [f"[alpha][epoch {epoch}] keys={list(alphas.keys())}"]
                 for k, a in alphas.items():
-                    m, x, h = alpha_stats(a)
+                    mean_vec, max_vec, entropy_h = alpha_stats(a)
                     lines.append(
                         f"[alpha] {k}: shape={tuple(a.shape)} "
-                        f"mean={np.round(m,3)} max={np.round(x,3)} H={h:.3f}"
+                        f"mean={np.round(mean_vec,3)} max={np.round(max_vec,3)} H={entropy_h:.3f}"
                     )
                 alpha_log = "\n".join(lines)
 
         # losses
         L_ai = weighted_masked_mse(ai_hat, y_ai, mc, w=cc)
 
-        s_syn = forward_seismic_from_ai(ai_hat, dt_ms=dt_ms, f0_hz=f0_hz, wavelet_nt=wavelet_nt)
+        s_syn = forward_seismic_from_ai(
+            ai_hat, dt_ms=dt_ms, f0_hz=f0_hz, wavelet_nt=wavelet_nt
+        )
         L_phys = weighted_masked_mse(s_syn, s_obs, mc, w=cc)
 
         if not facies_on:
@@ -143,23 +147,24 @@ def run_one_epoch(
             )
             lam_fac_eff = lam_fac
 
-        loss = lam_ai * L_ai + lam_phys * L_phys + lam_fac_eff * L_fac
+        loss_total = lam_ai * L_ai + lam_phys * L_phys + lam_fac_eff * L_fac
 
         if is_train:
-            loss.backward()
+            loss_total.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optim.step()
 
-        mt.update(loss.item(), x.size(0))
-        mai.update(L_ai.item(), x.size(0))
-        mph.update(L_phys.item(), x.size(0))
-        mfa.update(L_fac.item(), x.size(0))
+        bs = x.size(0)
+        meter_total.update(float(loss_total.item()), bs)
+        meter_ai.update(float(L_ai.item()), bs)
+        meter_phys.update(float(L_phys.item()), bs)
+        meter_fac.update(float(L_fac.item()), bs)
 
     out = {
-        "total": mt.avg,
-        "ai": mai.avg,
-        "phys": mph.avg,
-        "fac": mfa.avg,
+        "total": meter_total.avg,
+        "ai": meter_ai.avg,
+        "phys": meter_phys.avg,
+        "fac": meter_fac.avg,
     }
     if alpha_log:
         out["alpha_log"] = alpha_log

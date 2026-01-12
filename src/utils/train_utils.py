@@ -25,18 +25,22 @@ def alpha_stats(a: torch.Tensor):
 
 
 class AverageMeter:
+    """Computes and stores the average and current value."""
     def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0.0
+        self.avg = 0.0
         self.sum = 0.0
-        self.n = 0
+        self.count = 0
 
-    def update(self, v: float, n: int = 1):
-        self.sum += float(v) * n
-        self.n += n
-
-    @property
-    def avg(self) -> float:
-        return self.sum / max(1, self.n)
-
+    def update(self, val: float, n: int = 1):
+        v = float(val)
+        self.val = v
+        self.sum += v * int(n)
+        self.count += int(n)
+        self.avg = self.sum / max(self.count, 1)
 
 def ensure_dir(p: str) -> None:
     os.makedirs(p, exist_ok=True)
