@@ -1,4 +1,5 @@
 from __future__ import annotations
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,6 +17,7 @@ class GeoCNNMultiTask(nn.Module):
         super().__init__()
         self.t = t
         self.n_facies = n_facies
+        self._last_alphas = None
 
         def conv3(cin, cout, k=(3,3,3), s=(1,1,1), p=(1,1,1)):
             return nn.Sequential(
@@ -69,6 +71,9 @@ class GeoCNNMultiTask(nn.Module):
             "psfm3": getattr(self.psfm3, "_last_alpha", None),
         }
 
+    def get_alphas(self):
+        return self._last_alphas
+
     def forward(self, x, p, c, m):
         x = self._to_bcthw(x)
         p_bcthw = self._to_bcthw(p)   # only needed for shapes? PSFM expects original p format, we pass original
@@ -94,6 +99,12 @@ class GeoCNNMultiTask(nn.Module):
         e2m = self.psfm2(e_prev=e1,  e_self=e2, e_next=e3, p_full=p_full)
         # For scale3: use e2 (prev) and e3 (self)
         e3m = self.psfm3(e_prev=e2,  e_self=e3, e_next=None, p_full=p_full)
+
+        self._last_alphas = {
+            "psfm1": getattr(self.psfm1, "_last_alpha", None),
+            "psfm2": getattr(self.psfm2, "_last_alpha", None),
+            "psfm3": getattr(self.psfm3, "_last_alpha", None),
+        }
 
         # We continue with the deepest geology-modulated feature (paper: local features feed decoder)
         f = e3m
