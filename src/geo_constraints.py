@@ -44,7 +44,7 @@ class DataPaths:
     def segy_seis(self) -> str:
         return os.path.join(
             self.attr_time_sgy,
-            "synthetic_poststack_TIME_dt1ms_40Hz_fromAI_XY25.sgy"
+            "AI_FINAL_IL2_XL1_S0_XY25.sgy"
         )
 
     @property
