@@ -32,7 +32,10 @@ def weighted_masked_mse(
 def main():
     set_seed(2026)
 
-    DATA_ROOT = r"H:\GK-MRL-PhysicsConsistent-Inversion\GK-MRL-PhysicsConsistent-Inversion\data"
+    DATA_ROOT = os.environ.get(
+        "DATA_ROOT",
+        r"H:\GK-MRL-PhysicsConsistent-Inversion\GK-MRL-PhysicsConsistent-Inversion\data",
+    )
     paths = DataPaths(DATA_ROOT)
 
     constraints_npz = os.path.join(paths.processed_dir, "constraints.npz")

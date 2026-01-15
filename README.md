@@ -22,3 +22,24 @@ src/          Core implementations (reusable modules)
 notebooks/    Step-by-step Jupyter notebooks for experiments
 data/         Local data directory (ignored by git)
 results/      Outputs (ignored by git)
+```
+
+## 3. End-to-end pipeline (CLI)
+The notebooks have been mirrored into a runnable command-line pipeline. Provide the dataset path via `DATA_ROOT`
+or pass it to the script directly.
+
+```bash
+# Option A: run the bundled pipeline script
+./scripts/run_pipeline.sh /path/to/data
+
+# Option B: run steps manually
+export DATA_ROOT=/path/to/data
+python -m src.prepare_constraints
+python -m src.build_splits --train-ratio 0.7 --val-ratio 0.15 --test-ratio 0.15
+python -m src.train_baseline
+python -m src.train_physics
+python -m src.train_physics_weighted
+
+# Optional multitask training
+python -m src.train_multitask_facies
+```
